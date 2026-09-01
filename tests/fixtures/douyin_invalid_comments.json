@@ -1,0 +1,17 @@
+[
+  {
+    "comment_id": "invalid-empty-comment",
+    "create_time": 1777958385,
+    "ip_location": "四川",
+    "aweme_id": "7634004863847910656",
+    "content": "   ",
+    "user_id": "invalid-user",
+    "nickname": "测试用户",
+    "sub_comment_count": "0",
+    "like_count": 0,
+    "last_modify_ts": 1780917935263,
+    "parent_comment_id": "0",
+    "pictures": ""
+  }
+]
+

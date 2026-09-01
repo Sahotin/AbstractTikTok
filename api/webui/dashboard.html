@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>评论舆情智能分析</title>
+    <link rel="stylesheet" href="/assets/dashboard.css?v=2" />
+    <script defer src="/assets/dashboard.js?v=2"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="brand-mark">A</span>
+        <span><strong>AbstractTikTok</strong><small>Opinion Intelligence</small></span>
+      </a>
+      <nav><a href="/">采集控制台</a><a class="active" href="/dashboard">智能分析</a><a href="/docs">API</a></nav>
+      <span id="api-status" class="status"><i></i>正在连接</span>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div><p class="eyebrow">VIDEO COMMENT INTELLIGENCE</p><h1>视频评论智能分析与舆情 Agent</h1><p>把采集到的评论转化为可解释的情感、主题、风险、趋势与语义洞察。</p></div>
+        <button id="refresh" class="primary">刷新分析</button>
+      </section>
+
+      <section class="scope card">
+        <label>平台<select id="platform"><option value="douyin">抖音</option><option value="xhs">小红书</option><option value="bilibili">B站</option><option value="kuaishou">快手</option><option value="weibo">微博</option></select></label>
+        <label>内容 UUID<input id="content-id" placeholder="可选：限定单个视频" /></label>
+        <label>采集运行 UUID<input id="run-id" placeholder="可选：限定一次采集" /></label>
+        <label>语义运行 UUID<input id="semantic-run-id" placeholder="主题与语义检索需要" /></label>
+      </section>
+
+      <section class="metrics">
+        <article class="metric card"><span>评论总量</span><strong id="total-comments">—</strong><small id="time-scope">当前筛选范围</small></article>
+        <article class="metric card"><span>AI 分析覆盖率</span><strong id="coverage">—</strong><small id="coverage-detail">尚未加载</small></article>
+        <article class="metric card"><span>综合风险分</span><strong id="risk-score">—</strong><small>规则透明的 0–100 排序信号</small></article>
+        <article class="metric card"><span>高风险评论</span><strong id="high-risk">—</strong><small id="risk-detail">最新分析版本</small></article>
+      </section>
+
+      <section class="card panel quality-panel">
+        <div class="panel-title"><div><p class="eyebrow">MODEL RELIABILITY</p><h2>评论分析质量基线</h2></div><span id="quality-generated" class="pill">等待评测</span></div>
+        <div class="quality-metrics">
+          <div><span>结构成功率</span><strong id="quality-structure">—</strong><small id="quality-sample">尚无真实评测</small></div>
+          <div><span>重复文本一致率</span><strong id="quality-duplicate">—</strong><small id="quality-duplicate-count">固定标签一致性</small></div>
+          <div><span>规则冲突</span><strong id="quality-violations">—</strong><small>情感分数与风险原因审计</small></div>
+          <div><span>调用 / Token</span><strong id="quality-usage">—</strong><small id="quality-latency">真实 Provider 遥测</small></div>
+        </div>
+        <p class="quality-note">这些指标衡量管线结构与一致性；模型准确率需填写人工标注模板后，以 macro-F1 和混淆矩阵为准。</p>
+      </section>
+
+      <section class="grid two">
+        <article class="card panel"><div class="panel-title"><div><p class="eyebrow">SENTIMENT</p><h2>情感与立场分布</h2></div><span id="analysis-quality" class="pill">等待数据</span></div><div id="sentiment-chart" class="bars empty">暂无分析数据</div><div id="stance-row" class="chips"></div></article>
+        <article class="card panel"><div class="panel-title"><div><p class="eyebrow">RISK</p><h2>风险结构</h2></div></div><div id="risk-chart" class="bars empty">暂无风险数据</div><div id="risk-reasons" class="rank-list"></div></article>
+      </section>
+
+      <section class="card panel trend-panel">
+        <div class="panel-title"><div><p class="eyebrow">TIMELINE</p><h2>舆情趋势与拐点</h2></div><select id="bucket"><option value="day">按天</option><option value="hour">按小时</option></select></div>
+        <div id="trend-chart" class="trend-empty">暂无时间序列</div><div id="inflections" class="inflections"></div>
+      </section>
+
+      <section class="grid topics-agent">
+        <article class="card panel"><div class="panel-title"><div><p class="eyebrow">SEMANTIC TOPICS</p><h2>评论主题簇</h2></div><span id="topic-count" class="pill">需要语义运行</span></div><div id="topic-list" class="topic-list empty">填写语义运行 UUID 后加载</div></article>
+        <article class="card panel agent-panel"><div class="panel-title"><div><p class="eyebrow">TOOL CALLING AGENT</p><h2>向舆情 Agent 提问</h2></div><span class="pill accent">DeepSeek</span></div><div id="agent-answer" class="agent-answer"><p>Agent 会按需调用统计、主题、趋势、风险与语义检索工具，并在覆盖率不足时主动说明。</p></div><form id="agent-form"><textarea id="agent-question" rows="3" placeholder="例如：这个视频的主要争议是什么？是否出现风险上升？" required></textarea><button class="primary" type="submit">分析并回答</button></form><div id="agent-trace" class="trace"></div></article>
+      </section>
+
+      <section class="card panel search-panel"><div class="panel-title"><div><p class="eyebrow">SEMANTIC SEARCH</p><h2>相似评论检索</h2></div></div><form id="search-form"><input id="search-query" placeholder="输入自然语言，例如：不会报名、价格太贵" required /><button class="secondary" type="submit">语义检索</button></form><div id="search-results" class="search-results empty">填写语义运行 UUID 后可检索</div></section>
+    </main>
+    <div id="toast" role="status"></div>
+  </body>
+</html>
