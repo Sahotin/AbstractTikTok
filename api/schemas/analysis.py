@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -323,3 +323,51 @@ class TopicDetailResponse(TopicClusterResponse):
     algorithm: str
     algorithm_version: str
     config_hash: str
+
+
+AnalysisItem = Literal[
+    "sentiment",
+    "emotion",
+    "stance",
+    "keywords",
+    "risk",
+    "trend",
+    "topics",
+    "semantic_search",
+    "agent",
+]
+
+
+class CollectionAnalysisWorkflowRequest(BaseModel):
+    """Start AI analysis from files produced by one crawler task."""
+
+    platform: Platform
+    source_files: list[str] = Field(min_length=1, max_length=20)
+    analysis_items: list[AnalysisItem] = Field(min_length=1)
+    crawler_type: str = Field(default="import", min_length=1, max_length=32)
+    limit: int = Field(default=100, ge=1, le=10_000)
+    batch_size: int = Field(default=20, ge=1, le=500)
+    max_concurrency: int = Field(default=2, ge=1, le=20)
+
+
+class CollectionAnalysisWorkflowResponse(AnalysisResponseModel):
+    id: UUID
+    status: Literal["pending", "running", "completed", "failed"]
+    stage: Literal["queued", "ingesting", "analyzing", "embedding", "clustering", "completed", "failed"]
+    progress_percent: float = Field(ge=0.0, le=100.0)
+    message: str
+    platform: Platform
+    source_files: list[str]
+    analysis_items: list[AnalysisItem]
+    requested_limit: int
+    run_id: Optional[UUID] = None
+    analysis_job_id: Optional[UUID] = None
+    semantic_run_id: Optional[UUID] = None
+    content_count: int = Field(default=0, ge=0)
+    comment_count: int = Field(default=0, ge=0)
+    analyzed_count: int = Field(default=0, ge=0)
+    topic_count: int = Field(default=0, ge=0)
+    created_at: datetime
+    updated_at: datetime
+    error_message: Optional[str] = None
+    dashboard_url: Optional[str] = None

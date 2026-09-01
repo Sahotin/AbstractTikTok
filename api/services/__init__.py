@@ -19,10 +19,13 @@
 from .crawler_manager import CrawlerManager, crawler_manager
 from .analysis_job_manager import InProcessAnalysisJobManager
 from .semantic_run_manager import InProcessSemanticRunManager
+from .analysis_workflow_manager import AnalysisWorkflowManager, analysis_workflow_manager
 
 __all__ = [
     "CrawlerManager",
     "InProcessAnalysisJobManager",
     "InProcessSemanticRunManager",
+    "AnalysisWorkflowManager",
+    "analysis_workflow_manager",
     "crawler_manager",
 ]

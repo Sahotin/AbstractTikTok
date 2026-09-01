@@ -37,6 +37,7 @@ from analysis.services import (
 )
 from api.services.analysis_job_manager import InProcessAnalysisJobManager
 from api.services.semantic_run_manager import InProcessSemanticRunManager
+from api.services.analysis_workflow_manager import analysis_workflow_manager
 from api.schemas.analysis import (
     AnalysisStatisticsResponse,
     AnalysisJobCreateRequest,
@@ -63,6 +64,8 @@ from api.schemas.analysis import (
     TrendResponse,
     AgentChatRequest,
     AgentChatResponse,
+    CollectionAnalysisWorkflowRequest,
+    CollectionAnalysisWorkflowResponse,
 )
 
 
@@ -651,3 +654,29 @@ async def resume_analysis_job(
     if not manager.start(job.id):
         raise HTTPException(status_code=409, detail="Analysis job is already running in this process")
     return AnalysisJobResponse.from_job(job)
+
+
+@router.post(
+    "/workflows",
+    response_model=CollectionAnalysisWorkflowResponse,
+    status_code=202,
+)
+async def create_collection_analysis_workflow(
+    request: CollectionAnalysisWorkflowRequest,
+) -> CollectionAnalysisWorkflowResponse:
+    """Start the selected AI pipeline for one completed crawler output."""
+
+    return analysis_workflow_manager.start(request)
+
+
+@router.get(
+    "/workflows/{workflow_id}",
+    response_model=CollectionAnalysisWorkflowResponse,
+)
+async def get_collection_analysis_workflow(
+    workflow_id: UUID,
+) -> CollectionAnalysisWorkflowResponse:
+    workflow = analysis_workflow_manager.get(workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Analysis workflow not found")
+    return workflow

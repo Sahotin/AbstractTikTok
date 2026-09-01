@@ -59,6 +59,15 @@ Windows 用户可以直接双击 `start.bat`。脚本会：
 
 需要先安装 [uv](https://docs.astral.sh/uv/)。AI 分析和语义检索还需要在本地 `.env` 中填写相应 API Key；`.env` 不会被 Git 提交。
 
+采集完成后，采集控制台右下角会显示 **“采集完成 · AI 分析”**：
+
+1. 点击后选择情感/立场、风险、趋势、主题聚类、语义检索或 Agent；
+2. 设置本次最多分析的评论数和并发数；
+3. 点击“开始分析并查看结果”；
+4. 页面会跳转到 `/dashboard`，实时显示标准化、DeepSeek 分析、Embedding 与聚类进度。
+
+当前这一闭环支持抖音与 B 站的 JSON、JSONL、CSV 和 Excel 采集结果。远程模型分析会产生 API 费用，建议首次先选择 100 条评论。
+
 手动启动方式：
 
 ```powershell

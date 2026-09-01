@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from analysis.io import iter_records
-from analysis.normalization import DouyinNormalizer
+from analysis.normalization import BilibiliNormalizer, DouyinNormalizer
 from analysis.preprocessing import parse_datetime, validate_comment
 from analysis.repositories import AnalysisRepository
 from analysis.services import IngestionService
@@ -143,3 +143,70 @@ async def test_ingestion_reports_invalid_rows(tmp_path: Path) -> None:
     assert report.database_comment_count == 0
     assert any(issue.entity_type == "comment" for issue in report.issues)
 
+
+def test_real_shape_bilibili_comment_normalization() -> None:
+    raw = {
+        "comment_id": "9911",
+        "parent_comment_id": "0",
+        "video_id": "314480159984",
+        "content": "这个观点值得讨论",
+        "user_id": "42",
+        "nickname": "测试用户",
+        "create_time": 1_700_000_000,
+        "like_count": "12",
+        "sub_comment_count": "3",
+        "last_modify_ts": 1_700_000_100,
+    }
+
+    result = BilibiliNormalizer().normalize_comment(raw, uuid4())
+
+    assert result.platform.value == "bilibili"
+    assert result.native_content_id == "314480159984"
+    assert result.text == "这个观点值得讨论"
+    assert result.like_count == 12
+    assert result.depth == 0
+
+
+@pytest.mark.asyncio
+async def test_bilibili_excel_ingestion(tmp_path: Path) -> None:
+    from openpyxl import Workbook
+
+    workbook_path = tmp_path / "bili_detail.xlsx"
+    workbook = Workbook()
+    contents = workbook.active
+    contents.title = "Contents"
+    contents.append([
+        "video_id", "video_type", "title", "desc", "create_time", "user_id",
+        "nickname", "liked_count", "video_comment", "video_url", "last_modify_ts",
+    ])
+    contents.append([
+        "314480159984", "video", "测试视频", "视频简介", 1_700_000_000, "42",
+        "UP主", "100", "1", "https://www.bilibili.com/video/av314480159984", 1_700_000_100,
+    ])
+    comments = workbook.create_sheet("Comments")
+    comments.append([
+        "comment_id", "parent_comment_id", "create_time", "video_id", "content",
+        "user_id", "nickname", "sub_comment_count", "like_count", "last_modify_ts",
+    ])
+    comments.append([
+        "9911", "0", 1_700_000_010, "314480159984", "这个观点值得讨论",
+        "99", "评论用户", "0", "12", 1_700_000_100,
+    ])
+    creators = workbook.create_sheet("Creators")
+    creators.append(["user_id", "nickname", "total_fans", "last_modify_ts"])
+    creators.append(["42", "UP主", "500", 1_700_000_100])
+    workbook.save(workbook_path)
+
+    repository = AnalysisRepository(tmp_path / "analysis.db")
+    service = IngestionService(repository, batch_size=10)
+    try:
+        report = await service.ingest([workbook_path], platform="bilibili", crawler_type="detail")
+        comments_page = await repository.get_comments_by_ids([])
+    finally:
+        await repository.close()
+
+    assert report.contents_inserted == 1
+    assert report.comments_inserted == 1
+    assert report.authors_inserted >= 1
+    assert report.database_comment_count == 1
+    assert comments_page == []

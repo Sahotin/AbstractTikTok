@@ -18,7 +18,7 @@
 
 from fastapi import APIRouter, HTTPException
 
-from ..schemas import CrawlerStartRequest, CrawlerStatusResponse
+from ..schemas import CrawlerAnalysisContextResponse, CrawlerStartRequest, CrawlerStatusResponse
 from ..services import crawler_manager
 
 router = APIRouter(prefix="/crawler", tags=["crawler"])
@@ -61,3 +61,10 @@ async def get_logs(limit: int = 100):
     """Get recent logs"""
     logs = crawler_manager.logs[-limit:] if limit > 0 else crawler_manager.logs
     return {"logs": [log.model_dump() for log in logs]}
+
+
+@router.get("/analysis-context", response_model=CrawlerAnalysisContextResponse)
+async def get_analysis_context():
+    """Return the latest completed crawl and its analyzable output files."""
+
+    return crawler_manager.get_analysis_context()

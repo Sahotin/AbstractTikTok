@@ -66,7 +66,7 @@ def _print_progress(message: str) -> None:
 @app.command()
 def ingest(
     inputs: List[Path] = typer.Option(..., "--input", "-i", help="JSON/JSONL file or directory; repeat for multiple inputs"),
-    platform: str = typer.Option("douyin", help="Phase 1A supports douyin only"),
+    platform: str = typer.Option("douyin", help="Supported values: douyin, bilibili"),
     database: Path = typer.Option(Path("database/analysis.db"), help="Target SQLite database"),
     batch_size: int = typer.Option(500, min=1, max=5000, help="Rows written per transaction batch"),
     crawler_type: str = typer.Option("import", help="Source crawler mode for run metadata"),
@@ -89,7 +89,7 @@ def ingest(
         finally:
             await repository.close()
 
-        typer.echo("\n=== Phase 1A ingestion report ===")
+        typer.echo("\n=== Normalized ingestion report ===")
         typer.echo(report.model_dump_json(indent=2))
 
     try:

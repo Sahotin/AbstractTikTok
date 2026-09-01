@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from analysis.domain import CollectionRun, CollectionRunStatus, Platform
 from analysis.io import InputSource, discover_input_sources, iter_records
-from analysis.normalization import DouyinNormalizer
+from analysis.normalization import BilibiliNormalizer, DouyinNormalizer
 from analysis.preprocessing import (
     DataQualityIssue,
     utc_now,
@@ -57,7 +57,7 @@ class IngestionReport(BaseModel):
 
 
 class IngestionService:
-    """Import Douyin crawler output into normalized SQLite tables."""
+    """Import supported MediaCrawler output into normalized SQLite tables."""
 
     def __init__(
         self,
@@ -73,6 +73,7 @@ class IngestionService:
         self.progress = progress or (lambda _message: None)
         self.issue_sample_limit = issue_sample_limit
         self.normalizer = DouyinNormalizer()
+        self.platform = Platform.DOUYIN
 
     async def ingest(
         self,
@@ -82,10 +83,19 @@ class IngestionService:
         query: Optional[str] = None,
         specified_ids: Optional[list[str]] = None,
     ) -> IngestionReport:
-        """Import JSON/JSONL sources in deterministic, idempotent batches."""
+        """Import crawler sources in deterministic, idempotent batches."""
 
-        if platform not in {"douyin", "dy"}:
-            raise ValueError("Phase 1A only supports platform=douyin")
+        normalized_platform = platform.strip().lower()
+        adapters = {
+            "douyin": (Platform.DOUYIN, DouyinNormalizer),
+            "dy": (Platform.DOUYIN, DouyinNormalizer),
+            "bilibili": (Platform.BILIBILI, BilibiliNormalizer),
+            "bili": (Platform.BILIBILI, BilibiliNormalizer),
+        }
+        if normalized_platform not in adapters:
+            raise ValueError("Analysis ingestion currently supports Douyin and Bilibili")
+        self.platform, normalizer_type = adapters[normalized_platform]
+        self.normalizer = normalizer_type()
 
         sources = await discover_input_sources(inputs)
         run_id, fingerprints = await self._stable_run_id(
@@ -102,7 +112,7 @@ class IngestionService:
         started_at = utc_now()
         run = CollectionRun(
             id=run_id,
-            platform=Platform.DOUYIN,
+            platform=self.platform,
             crawler_type=crawler_type,
             query=query,
             specified_ids=specified_ids or [],
@@ -111,7 +121,7 @@ class IngestionService:
             config_snapshot={
                 "batch_size": self.batch_size,
                 "input_fingerprints": fingerprints,
-                "json_note": "JSON arrays are materialized; JSONL is streamed line-by-line.",
+                "input_note": "JSON and Excel are materialized; JSONL is streamed line-by-line.",
             },
             output_location=[str(source.path) for source in sources],
         )
@@ -159,7 +169,7 @@ class IngestionService:
     async def _ingest_content_source(self, source: InputSource, report: IngestionReport, run_id: UUID) -> None:
         batch: list[tuple[int, dict]] = []
         row_number = 0
-        async for raw in iter_records(source.path):
+        async for raw in iter_records(source.path, source.sheet_name):
             row_number += 1
             report.records_read += 1
             report.contents_read += 1
@@ -193,7 +203,8 @@ class IngestionService:
                         authors.append(author)
                 contents.append(content)
             except (ValueError, TypeError, ValidationError) as exc:
-                self._record_invalid("content", str(exc), source, row_number, report, raw.get("aweme_id"))
+                native_id = raw.get("aweme_id") or raw.get("video_id")
+                self._record_invalid("content", str(exc), source, row_number, report, native_id)
 
         author_result = await self.repository.upsert_authors(authors)
         content_result = await self.repository.upsert_contents(contents)
@@ -205,7 +216,7 @@ class IngestionService:
     async def _ingest_comment_source(self, source: InputSource, report: IngestionReport, run_id: UUID) -> None:
         batch: list[tuple[int, dict]] = []
         row_number = 0
-        async for raw in iter_records(source.path):
+        async for raw in iter_records(source.path, source.sheet_name):
             row_number += 1
             report.records_read += 1
             report.comments_read += 1
@@ -234,7 +245,7 @@ class IngestionService:
                 self._record_invalid("comment", str(exc), source, row_number, report, raw.get("comment_id"))
 
         existing_content_ids = await self.repository.existing_content_ids(
-            "douyin", (candidate[2].native_content_id for candidate in candidates)
+            self.platform.value, (candidate[2].native_content_id for candidate in candidates)
         )
         comments = []
         authors = []
@@ -258,7 +269,7 @@ class IngestionService:
     async def _ingest_author_source(self, source: InputSource, report: IngestionReport) -> None:
         batch = []
         row_number = 0
-        async for raw in iter_records(source.path):
+        async for raw in iter_records(source.path, source.sheet_name):
             row_number += 1
             report.records_read += 1
             report.authors_read += 1
@@ -347,11 +358,12 @@ class IngestionService:
             fingerprints.append({
                 "path": str(source.path),
                 "kind": source.kind,
+                "sheet_name": source.sheet_name or "",
                 "sha256": digest,
             })
         identity = json.dumps(
             {
-                "platform": "douyin",
+                "platform": self.platform.value,
                 "crawler_type": crawler_type,
                 "query": query,
                 "specified_ids": sorted(specified_ids),

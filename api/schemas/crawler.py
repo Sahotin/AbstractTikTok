@@ -18,7 +18,7 @@
 
 from enum import Enum
 from typing import Optional, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PlatformEnum(str, Enum):
@@ -79,15 +79,10 @@ class CrawlerStatusResponse(BaseModel):
     platform: Optional[str] = None
     crawler_type: Optional[str] = None
     started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    task_id: Optional[str] = None
+    output_files: list[str] = Field(default_factory=list)
     error_message: Optional[str] = None
-
-
-class LogEntry(BaseModel):
-    """Log entry"""
-    id: int
-    timestamp: str
-    level: Literal["info", "warning", "error", "success", "debug"]
-    message: str
 
 
 class DataFileInfo(BaseModel):
@@ -97,3 +92,26 @@ class DataFileInfo(BaseModel):
     size: int
     modified_at: str
     record_count: Optional[int] = None
+
+
+class CrawlerAnalysisContextResponse(BaseModel):
+    """The latest crawl output that can be handed to the AI workflow."""
+
+    available: bool
+    supported: bool
+    task_id: Optional[str] = None
+    crawler_platform: Optional[str] = None
+    analysis_platform: Optional[str] = None
+    crawler_type: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    files: list[DataFileInfo] = Field(default_factory=list)
+    message: str
+
+
+class LogEntry(BaseModel):
+    """Log entry"""
+    id: int
+    timestamp: str
+    level: Literal["info", "warning", "error", "success", "debug"]
+    message: str

@@ -24,6 +24,12 @@
         <button id="refresh" class="primary">刷新分析</button>
       </section>
 
+      <section id="workflow-panel" class="card panel workflow-panel" hidden>
+        <div class="panel-title"><div><p class="eyebrow">ANALYSIS WORKFLOW</p><h2 id="workflow-title">正在接收采集数据</h2></div><span id="workflow-percent" class="pill accent">0%</span></div>
+        <div class="workflow-track"><div id="workflow-progress" class="workflow-progress"></div></div>
+        <p id="workflow-message">正在创建分析任务…</p>
+      </section>
+
       <section class="scope card">
         <label>平台<select id="platform"><option value="douyin">抖音</option><option value="xhs">小红书</option><option value="bilibili">B站</option><option value="kuaishou">快手</option><option value="weibo">微博</option></select></label>
         <label>内容 UUID<input id="content-id" placeholder="可选：限定单个视频" /></label>
