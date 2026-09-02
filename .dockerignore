@@ -1,0 +1,16 @@
+.git
+.venv
+.codex-venv
+venv
+.uv-cache
+__pycache__
+.pytest_cache
+node_modules
+browser_data
+data
+database/*.db
+database/backups
+benchmarks/topic_quality/*.md
+*.pyc
+*.pyo
+.env
