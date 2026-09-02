@@ -1,0 +1,472 @@
+# -*- coding: utf-8 -*-
+# Copyright (c) 2025 relakkes@gmail.com
+#
+# This file is part of MediaCrawler project.
+# Repository: https://github.com/NanmiCoder/MediaCrawler/blob/main/api/services/crawler_manager.py
+# GitHub: https://github.com/NanmiCoder
+# Licensed under NON-COMMERCIAL LEARNING LICENSE 1.1
+#
+# 声明：本代码仅供学习和研究目的使用。使用者应遵守以下原则：
+# 1. 不得用于任何商业用途。
+# 2. 使用时应遵守目标平台的使用条款和robots.txt规则。
+# 3. 不得进行大规模爬取或对平台造成运营干扰。
+# 4. 应合理控制请求频率，避免给目标平台带来不必要的负担。
+# 5. 不得用于任何非法或不当的用途。
+#
+# 详细许可条款请参阅项目根目录下的LICENSE文件。
+# 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
+
+import asyncio
+import subprocess
+import signal
+import os
+from typing import Optional, List
+from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
+
+from ..schemas import CrawlerStartRequest, LogEntry
+from ..runtime_env import PROJECT_ROOT, build_uv_environment
+
+
+class CrawlerManager:
+    """Crawler process manager"""
+
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self.process: Optional[subprocess.Popen] = None
+        self.status = "idle"
+        self.started_at: Optional[datetime] = None
+        self.finished_at: Optional[datetime] = None
+        self.task_id: Optional[str] = None
+        self.output_files: list[str] = []
+        self._output_snapshot: dict[str, tuple[int, int]] = {}
+        self.current_config: Optional[CrawlerStartRequest] = None
+        self._log_id = 0
+        self._logs: List[LogEntry] = []
+        self._read_task: Optional[asyncio.Task] = None
+        # Project root directory
+        self._project_root = PROJECT_ROOT
+        self._data_root = self._project_root / "data"
+        # Log queue - for pushing to WebSocket
+        self._log_queue: Optional[asyncio.Queue] = None
+
+    @property
+    def logs(self) -> List[LogEntry]:
+        return self._logs
+
+    def get_log_queue(self) -> asyncio.Queue:
+        """Get or create log queue"""
+        if self._log_queue is None:
+            self._log_queue = asyncio.Queue()
+        return self._log_queue
+
+    def _create_log_entry(self, message: str, level: str = "info") -> LogEntry:
+        """Create log entry"""
+        self._log_id += 1
+        entry = LogEntry(
+            id=self._log_id,
+            timestamp=datetime.now().strftime("%H:%M:%S"),
+            level=level,
+            message=message
+        )
+        self._logs.append(entry)
+        # Keep last 500 logs
+        if len(self._logs) > 500:
+            self._logs = self._logs[-500:]
+        return entry
+
+    async def _push_log(self, entry: LogEntry):
+        """Push log to queue"""
+        if self._log_queue is not None:
+            try:
+                self._log_queue.put_nowait(entry)
+            except asyncio.QueueFull:
+                pass
+
+    def _parse_log_level(self, line: str) -> str:
+        """Parse log level"""
+        line_upper = line.upper()
+        if "ERROR" in line_upper or "FAILED" in line or "失败" in line:
+            return "error"
+        elif "WARNING" in line_upper or "WARN" in line or "提示" in line:
+            return "warning"
+        elif "SUCCESS" in line_upper or "完成" in line or "成功" in line:
+            return "success"
+        elif "DEBUG" in line_upper:
+            return "debug"
+        return "info"
+
+    def _subprocess_env(self) -> dict:
+        """Build a project-local uv environment with Windows user install support."""
+        env = build_uv_environment()
+        uv_bin = Path.home() / ".local" / "bin"
+        if uv_bin.is_dir():
+            env["PATH"] = str(uv_bin) + os.pathsep + env.get("PATH", "")
+        return env
+
+    async def _push_startup_hints(self, config: CrawlerStartRequest) -> None:
+        """Push user-facing hints after crawler subprocess starts."""
+        hints = [
+            (
+                "[提示] 浏览器已打开属正常步骤。若 Chrome 弹出「允许远程调试」，请点击「接受/Allow」。",
+                "warning",
+            ),
+            (
+                "[提示] 请向下滚动页面，在底部「系统控制台」查看实时日志。",
+                "info",
+            ),
+        ]
+        if config.login_type.value == "qrcode":
+            platform_names = {
+                "xhs": "小红书",
+                "dy": "抖音",
+                "ks": "快手",
+                "bili": "B站",
+                "wb": "微博",
+                "tieba": "百度贴吧",
+                "zhihu": "知乎",
+            }
+            name = platform_names.get(config.platform.value, config.platform.value)
+            hints.append(
+                (
+                    f"[提示] 当前为「{name}」二维码登录：请在 Chrome 窗口中打开登录页并扫码，"
+                    "登录成功后爬虫会自动继续（最多等待约 10 分钟）。",
+                    "warning",
+                )
+            )
+        for message, level in hints:
+            entry = self._create_log_entry(message, level)
+            await self._push_log(entry)
+
+    async def start(self, config: CrawlerStartRequest) -> bool:
+        """Start crawler process"""
+        async with self._lock:
+            if self.process and self.process.poll() is None:
+                return False
+
+            # Clear old logs
+            self._logs = []
+            self._log_id = 0
+            self.task_id = str(uuid4())
+            self.finished_at = None
+            self.output_files = []
+            self._output_snapshot = self._snapshot_platform_files(config.platform.value)
+
+            # Clear pending queue (don't replace object to avoid WebSocket broadcast coroutine holding old queue reference)
+            if self._log_queue is None:
+                self._log_queue = asyncio.Queue()
+            else:
+                try:
+                    while True:
+                        self._log_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+
+            # Build command line arguments
+            cmd = self._build_command(config)
+
+            # Log start information
+            entry = self._create_log_entry(f"Starting crawler: {' '.join(cmd)}", "info")
+            await self._push_log(entry)
+
+            try:
+                # Start subprocess
+                self.process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    bufsize=1,
+                    cwd=str(self._project_root),
+                    env=self._subprocess_env(),
+                )
+
+                self.status = "running"
+                self.started_at = datetime.now()
+                self.current_config = config
+
+                entry = self._create_log_entry(
+                    f"Crawler started on platform: {config.platform.value}, type: {config.crawler_type.value}",
+                    "success"
+                )
+                await self._push_log(entry)
+                await self._push_startup_hints(config)
+
+                # Start log reading task
+                self._read_task = asyncio.create_task(self._read_output())
+
+                return True
+            except Exception as e:
+                self.status = "error"
+                entry = self._create_log_entry(f"Failed to start crawler: {str(e)}", "error")
+                await self._push_log(entry)
+                return False
+
+    async def stop(self) -> bool:
+        """Stop crawler process"""
+        async with self._lock:
+            if not self.process or self.process.poll() is not None:
+                return False
+
+            self.status = "stopping"
+            entry = self._create_log_entry("Sending SIGTERM to crawler process...", "warning")
+            await self._push_log(entry)
+
+            try:
+                self.process.send_signal(signal.SIGTERM)
+
+                # Wait for graceful exit (up to 15 seconds)
+                for _ in range(30):
+                    if self.process.poll() is not None:
+                        break
+                    await asyncio.sleep(0.5)
+
+                # If still not exited, force kill
+                if self.process.poll() is None:
+                    entry = self._create_log_entry("Process not responding, sending SIGKILL...", "warning")
+                    await self._push_log(entry)
+                    self.process.kill()
+
+                entry = self._create_log_entry("Crawler process terminated", "info")
+                await self._push_log(entry)
+
+            except Exception as e:
+                entry = self._create_log_entry(f"Error stopping crawler: {str(e)}", "error")
+                await self._push_log(entry)
+
+            self.status = "idle"
+            self.current_config = None
+
+            # Cancel log reading task
+            if self._read_task:
+                self._read_task.cancel()
+                self._read_task = None
+
+            return True
+
+    def get_status(self) -> dict:
+        """Get current status"""
+        return {
+            "status": self.status,
+            "platform": self.current_config.platform.value if self.current_config else None,
+            "crawler_type": self.current_config.crawler_type.value if self.current_config else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "task_id": self.task_id,
+            "output_files": self.output_files,
+            "error_message": None
+        }
+
+    @staticmethod
+    def _analysis_platform(platform: str | None) -> str | None:
+        return {"dy": "douyin", "bili": "bilibili"}.get(platform or "")
+
+    @staticmethod
+    def _storage_platforms(platform: str) -> tuple[str, ...]:
+        return {
+            "dy": ("douyin", "dy"),
+            "bili": ("bilibili", "bili"),
+        }.get(platform, (platform,))
+
+    def _snapshot_platform_files(self, platform: str) -> dict[str, tuple[int, int]]:
+        supported = {".json", ".jsonl", ".csv", ".xlsx"}
+        snapshot: dict[str, tuple[int, int]] = {}
+        for storage_platform in self._storage_platforms(platform):
+            directory = self._data_root / storage_platform
+            if not directory.is_dir():
+                continue
+            for path in directory.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in supported:
+                    continue
+                stat = path.stat()
+                snapshot[str(path.resolve())] = (stat.st_mtime_ns, stat.st_size)
+        return snapshot
+
+    def _capture_changed_output_files(self) -> list[str]:
+        if self.current_config is None:
+            return []
+        current = self._snapshot_platform_files(self.current_config.platform.value)
+        changed = [path for path, signature in current.items() if self._output_snapshot.get(path) != signature]
+        return sorted(
+            str(Path(path).relative_to(self._data_root.resolve())).replace("\\", "/")
+            for path in changed
+        )
+
+    def _latest_platform_files(self, platform: str) -> list[str]:
+        """Fallback after a server restart when the in-memory crawl snapshot is gone."""
+
+        supported = {".json", ".jsonl", ".csv", ".xlsx"}
+        files = []
+        for storage_platform in self._storage_platforms(platform):
+            directory = self._data_root / storage_platform
+            if directory.is_dir():
+                files.extend(
+                    path for path in directory.rglob("*")
+                    if path.is_file() and path.suffix.lower() in supported
+                )
+        if not files:
+            return []
+        files.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        newest = files[0]
+        if newest.suffix.lower() == ".xlsx":
+            selected = [newest]
+        else:
+            parts = newest.stem.split("_")
+            crawler_type = parts[0] if parts else ""
+            batch_token = parts[-1] if len(parts) >= 3 else ""
+            selected = [
+                path for path in files
+                if path.parent == newest.parent
+                and path.suffix.lower() == newest.suffix.lower()
+                and path.stem.startswith(f"{crawler_type}_")
+                and path.stem.endswith(f"_{batch_token}")
+            ]
+            if not selected:
+                cutoff = newest.stat().st_mtime - 300
+                selected = [path for path in files if path.stat().st_mtime >= cutoff]
+        return [str(path.relative_to(self._data_root)).replace("\\", "/") for path in selected]
+
+    def get_analysis_context(self) -> dict:
+        config = self.current_config
+        crawler_platform = config.platform.value if config else None
+        files = list(self.output_files)
+        if crawler_platform is None:
+            candidates = []
+            for platform in ("dy", "bili"):
+                latest = self._latest_platform_files(platform)
+                if latest:
+                    newest_mtime = max((self._data_root / relative).stat().st_mtime for relative in latest)
+                    candidates.append((newest_mtime, platform, latest))
+            if candidates:
+                _modified, crawler_platform, files = max(candidates, key=lambda item: item[0])
+        if not files and crawler_platform:
+            files = self._latest_platform_files(crawler_platform)
+        analysis_platform = self._analysis_platform(crawler_platform)
+        crawler_type = config.crawler_type.value if config else None
+        if crawler_type is None and files:
+            prefix = Path(files[0]).name.split("_", 1)[0].lower()
+            crawler_type = prefix if prefix in {"search", "detail", "creator"} else "import"
+        file_items = []
+        for relative in files:
+            path = self._data_root / relative
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            file_items.append({
+                "name": path.name,
+                "path": relative,
+                "size": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "record_count": None,
+            })
+        supported = analysis_platform is not None
+        available = bool(file_items) and supported and self.status != "running"
+        if self.status == "running":
+            message = "采集仍在进行，完成后即可分析"
+        elif not supported and crawler_platform:
+            message = "当前平台尚未接入标准化分析"
+        elif not file_items:
+            message = "尚未找到本次采集产生的数据文件"
+        else:
+            message = "采集数据已就绪，可以选择 AI 分析项"
+        return {
+            "available": available,
+            "supported": supported,
+            "task_id": self.task_id,
+            "crawler_platform": crawler_platform,
+            "analysis_platform": analysis_platform,
+            "crawler_type": crawler_type,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "files": file_items,
+            "message": message,
+        }
+
+    def _build_command(self, config: CrawlerStartRequest) -> list:
+        """Build main.py command line arguments"""
+        cmd = ["uv", "run", "python", "main.py"]
+
+        cmd.extend(["--platform", config.platform.value])
+        cmd.extend(["--lt", config.login_type.value])
+        cmd.extend(["--type", config.crawler_type.value])
+        cmd.extend(["--save_data_option", config.save_option.value])
+
+        # Pass different arguments based on crawler type
+        if config.crawler_type.value == "search" and config.keywords:
+            cmd.extend(["--keywords", config.keywords])
+        elif config.crawler_type.value == "detail" and config.specified_ids:
+            cmd.extend(["--specified_id", config.specified_ids])
+        elif config.crawler_type.value == "creator" and config.creator_ids:
+            cmd.extend(["--creator_id", config.creator_ids])
+
+        if config.start_page != 1:
+            cmd.extend(["--start", str(config.start_page)])
+
+        cmd.extend(["--get_comment", "true" if config.enable_comments else "false"])
+        cmd.extend(["--get_sub_comment", "true" if config.enable_sub_comments else "false"])
+
+        if config.cookies:
+            cmd.extend(["--cookies", config.cookies])
+
+        cmd.extend(["--headless", "true" if config.headless else "false"])
+
+        return cmd
+
+    async def _read_output(self):
+        """Asynchronously read process output"""
+        loop = asyncio.get_event_loop()
+
+        try:
+            while self.process and self.process.poll() is None:
+                # Read a line in thread pool
+                line = await loop.run_in_executor(
+                    None, self.process.stdout.readline
+                )
+                if line:
+                    line = line.strip()
+                    if line:
+                        level = self._parse_log_level(line)
+                        entry = self._create_log_entry(line, level)
+                        await self._push_log(entry)
+
+            # Read remaining output
+            if self.process and self.process.stdout:
+                remaining = await loop.run_in_executor(
+                    None, self.process.stdout.read
+                )
+                if remaining:
+                    for line in remaining.strip().split('\n'):
+                        if line.strip():
+                            level = self._parse_log_level(line)
+                            entry = self._create_log_entry(line.strip(), level)
+                            await self._push_log(entry)
+
+            # Process ended
+            if self.status == "running":
+                exit_code = self.process.returncode if self.process else -1
+                self.finished_at = datetime.now()
+                self.output_files = self._capture_changed_output_files()
+                if exit_code == 0:
+                    entry = self._create_log_entry("Crawler completed successfully", "success")
+                    if self.output_files:
+                        ready = self._create_log_entry(
+                            f"[AI] 本次采集产生 {len(self.output_files)} 个数据文件，可点击“AI 智能分析”继续。",
+                            "success",
+                        )
+                        await self._push_log(ready)
+                else:
+                    entry = self._create_log_entry(f"Crawler exited with code: {exit_code}", "warning")
+                await self._push_log(entry)
+                self.status = "idle"
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            entry = self._create_log_entry(f"Error reading output: {str(e)}", "error")
+            await self._push_log(entry)
+
+
+# Global singleton
+crawler_manager = CrawlerManager()
